@@ -1,0 +1,210 @@
+---
+title: "MLOps with vetiver"
+toc: true
+toc-location: left
+format: 
+  html:
+    number-sections: true
+    html-math-method: katex
+    code-tools: true
+    code-fold: false
+    code-link: true
+editor: visual
+execute: 
+  warning: false
+  message: false
+---
+
+## Create a workflow and a vetiver object for deployment
+
+### Train a model
+
+Train a tidymodels workflow that encompassses both feature engineering and model estimation
+
+```{r}
+library(here)
+library(tidymodels)
+car_mod <- workflow(preprocessor = mpg ~ ., spec = linear_reg()) %>% 
+  fit(mtcars)
+
+car_mod
+```
+
+This `car_mod` object is a fitted model, with model parameters estimated using `mtcars`.
+
+### Create a vetiver model
+
+We can create a `vetiver_model` in R. A `vetiver` model object collects information needed to store, version and deploy a trained model.
+
+```{r}
+library(vetiver)
+
+# Vetiver object for deployment of a trained model
+v <- vetiver_model(
+  model = car_mod,
+  model_name = "cars_mpg"
+)
+
+# Print model object
+v
+```
+
+## Version
+
+One can store and version a model by choosing a [pins](https://pins.rstudio.com/) "board" for it.
+
+### Store and version your model
+
+When we write the vetiver model to our board, the binary model object is stored on our board together with necessary metadata, like the packages needed to make a prediction and the model's input data prototype for checking new data at prediction time.
+
+::: callout-note
+[`board_temp()`](https://pins.rstudio.com/reference/board_folder.html) creates a temporary board that's automatically deleted when your R session ends. This is great for examples, but obviously you shouldn't use it for real work!
+:::
+
+In the code below, you would need to create an Azure storage account. An Azure storage account contains all of your Azure Storage data objects: blobs, files, queues, and tables. The storage account provides a unique namespace for your Azure Storage data that is accessible from anywhere in the world over HTTP or HTTPS. Here are resources on how you would create one. Takes less than a minute:
+
+::: callout-tip
+using `gui` on Azure portal:
+
+<https://docs.microsoft.com/en-us/azure/storage/common/storage-account-create?tabs=azure-portal>
+
+using good R code:
+
+<https://blog.revolutionanalytics.com/2018/12/azurestor.html>
+:::
+
+```{r}
+library(pins)
+library(AzureStor)
+AccountKey= "KiJkGkoUpB5FSB2R6NsJJU9inhoEDUXJVM5ACvr4mWyqi/7LsiKqK1WOTjkX+YLoH6awXkHUXELd+AStt5b3qQ=="
+url <- "https://hifadhi.blob.core.windows.net/mycontainer"
+container <- AzureStor::blob_container(url, key = AccountKey)
+model_board <- board_azure(container)
+#model_board <- board_local(versioned = TRUE)
+vetiver_pin_write(model_board, v)
+```
+
+Let's train a new kind of model for `mtcars`, a decision tree instead of our original linear model.
+
+```{r}
+set.seed(2056)
+# Decision tree model
+car_mod <- workflow(
+  # Formula model, no recipe
+  preprocessor = mpg ~ .,
+  spec = decision_tree(mode = "regression")
+) %>% 
+  fit(mtcars)
+
+# Create vetiver object for deployment
+v <- car_mod %>% 
+  vetiver_model(model_name = "cars_mpg")
+
+# Write a vetiver model to a board
+v %>% 
+  vetiver_pin_write(board = model_board)
+```
+
+Both versions are stored and we have access to both
+
+```{r}
+model_board %>% 
+  pin_versions("cars_mpg")
+```
+
+As shown by the output, we can share and track the vetiver model.
+
+## Deploy
+
+You can deploy your model by creating a special [Plumber](https://www.rplumber.io/) router in R or a [FastAPI](https://fastapi.tiangolo.com/) router in Python, and adding a POST endpoint for making predictions.
+
+### Create REST API for deployment
+
+```{r}
+library(plumber)
+
+# Create a local plumber API to predict with a vetiver model
+pr() %>% 
+  vetiver_api(vetiver_model = v) #%>%
+  #pr_run(port = 8080)
+```
+
+You can create a ready to go file for deployment suited for Rstudio connect and docker
+
+```{r}
+#| eval = FALSE
+# Write a deployable plumber file for vetiver model
+# Takes the most recent version of model by default
+
+vetiver_write_plumber(model_board, "cars_mpg") 
+```
+
+### Generate a Dockerfile
+
+For deploying a vetiver API to infrastructure other than RStudio Connect such as [Azure](https://docs.microsoft.com/en-us/azure/container-instances/container-instances-quickstart), you likely will want to build a Docker container.
+
+```{r}
+#| eval = FALSE
+v %>% 
+  vetiver_write_docker()
+```
+
+What does the docker file look like?
+
+```{r}
+cat(readr::read_lines("Dockerfile"), sep = "\n")
+```
+
+`vetiver_write_docker()` generates *two* files: the Dockerfile itself and [the `renv.lock` file](https://rstudio.github.io/renv/articles/lockfile.html) that captures the model dependencies.
+
+::: callout-note
+You can then navigate to the directory of the docker file, open a terminal and build/run a docker container. For example in my case:
+
+> docker build -t azuver .
+
+[docker_build](https://docs.docker.com/engine/reference/commandline/build/) builds a docker container with all the packages the model needs to make a prediction
+
+> docker run --rm -p 8000:8000 azuver
+
+[docker_run](https://docs.docker.com/engine/reference/commandline/run/) starts the docker container.
+:::
+
+The Docker container should now be running! You can interact with it on the following url: <http://127.0.0.1:8000/__docs__/>
+
+::: callout-tip
+It took some bit of effort on my end to successfully build and run the docker image from an Azure board (this could only be on my PC). The following modifications were done:
+
+-   Installing `sudo` and `libxml2` on the docker file
+
+-   Adding `xml2`, and `AzureStor` on the `renv.lock` file and `plumber.R` file
+
+-   Modified board `b` manually in the `plumber.R` file to correctly set the Azure storage board that the API can read.
+
+Please see this excellent resource by [Jacqueline Nolis](https://twitter.com/skyetetra) on [Docker for Data Scientists](https://www.youtube.com/watch?v=2YMu9bzDJbY).
+:::
+
+### Predict from your model endpoint
+
+A model deployed via vetiver can be treated as a special `vetiver_endpoint()` object.
+
+```{r}
+#| eval = FALSE
+# Create a model API endpoint object for prediction
+endpoint <- vetiver_endpoint("http://127.0.0.1:8000/predict")
+endpoint
+```
+
+Make predictions on new data:
+
+```{r}
+new_car <- tibble(cyl = 4,  disp = 200, 
+                  hp = 100, drat = 3,
+                  wt = 3,   qsec = 17, 
+                  vs = 0,   am = 1,
+                  gear = 4, carb = 2)
+predict(endpoint, new_car)
+```
+
+You can then stop and remove all the Docker containers with:
+
+    docker stop $(docker ps -aq) ; docker rm $(docker ps -aq)
