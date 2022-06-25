@@ -1,0 +1,31 @@
+// Ignore this, not useful here //
+
+{
+    "Id": "azver_azver",
+    "Image": "azuver.azurecr.io/mlops_vetiver:ca1",
+    "Name": "azver_azver",
+    "State": "Running",
+    "Status": "Running",
+    "Labels": {
+        "com.docker.compose.project": "azver"
+    },
+    "Ports": [
+        {
+            "IP": "20.241.202.34",
+            "PublicPort": 8000,
+            "PrivatePort": 8000,
+            "Type": "tcp"
+        }
+    ],
+    "NetworkSettings": {
+        "Ports": {
+            "8000/tcp": [
+                {
+                    "HostIp": "20.241.202.34",
+                    "HostPort": "8000"
+                }
+            ]
+        }
+    },
+    "Platform": "linux"
+}
